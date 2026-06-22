@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; font-family: "Inter", system-ui, sans-serif; }
+    #ptt {
+      position: fixed; bottom: 12%; left: 50%; transform: translateX(-50%);
+      display: none; align-items: center; gap: 10px;
+      padding: 10px 18px; border-radius: 999px;
+      background: rgba(15, 11, 21, 0.82); border: 1px solid rgba(139, 61, 255, 0.5);
+      box-shadow: 0 8px 30px -6px rgba(139, 61, 255, 0.6);
+      color: #f3f6f8; font-size: 13px; font-weight: 600; letter-spacing: 0.04em;
+    }
+    #ptt.on { display: flex; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: #8b3dff; animation: pulse 1s infinite ease-in-out; }
+    @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: 0.5; } }
+  </style>
+</head>
+<body>
+  <div id="ptt"><span class="dot"></span><span id="lbl">Listening…</span></div>
+  <script>
+    const RES = (typeof GetParentResourceName === "function") ? GetParentResourceName() : "viscosity_ai_npcs";
+    const ind = document.getElementById("ptt");
+    const lbl = document.getElementById("lbl");
+
+    // AudioWorklet processor, loaded from an inline blob (no separate file).
+    const WORKLET = `
+      class RecorderProcessor extends AudioWorkletProcessor {
+        process(inputs) {
+          const ch = inputs[0] && inputs[0][0];
+          if (ch && ch.length) this.port.postMessage(new Float32Array(ch));
+          return true;
+        }
+      }
+      registerProcessor('recorder-processor', RecorderProcessor);
+    `;
+    const workletURL = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+
+    let ctx = null, stream = null, source = null, node = null;
+    let recording = false, buffers = [], length = 0;
+
+    function post(ev, data) {
+      return fetch(`https://${RES}/${ev}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}),
+      }).catch(() => {});
+    }
+
+    function encodeWAV(samples, rate) {
+      const buf = new ArrayBuffer(44 + samples.length * 2);
+      const v = new DataView(buf);
+      const w = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+      w(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); w(8, "WAVE");
+      w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+      w(36, "data"); v.setUint32(40, samples.length * 2, true);
+      let off = 44;
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true); off += 2;
+      }
+      return new Blob([buf], { type: "audio/wav" });
+    }
+
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        await ctx.audioWorklet.addModule(workletURL);
+        source = ctx.createMediaStreamSource(stream);
+        node = new AudioWorkletNode(ctx, "recorder-processor");
+        buffers = []; length = 0; recording = true;
+        node.port.onmessage = (e) => {
+          if (!recording) return;
+          buffers.push(e.data); length += e.data.length;
+        };
+        source.connect(node);
+        node.connect(ctx.destination);  // silent (worklet writes no output) — just keeps the graph pulling
+        lbl.textContent = "Listening…";
+        ind.classList.add("on");
+      } catch (err) {
+        post("micError", { error: String(err) });
+        ind.classList.remove("on");
+      }
+    }
+
+    async function stop() {
+      if (!recording) return;
+      recording = false;
+      const rate = ctx.sampleRate;
+      const merged = new Float32Array(length);
+      let o = 0; for (const b of buffers) { merged.set(b, o); o += b.length; }
+      try { node.disconnect(); source.disconnect(); stream.getTracks().forEach((t) => t.stop()); ctx.close(); } catch (e) {}
+
+      if (length < rate * 0.25) { ind.classList.remove("on"); return; }
+      lbl.textContent = "Thinking…";
+      const wav = encodeWAV(merged, rate);
+      const b64 = await new Promise((res) => {
+        const r = new FileReader(); r.onloadend = () => res(String(r.result).split(",")[1]); r.readAsDataURL(wav);
+      });
+      await post("voice", { audio: b64 });
+      ind.classList.remove("on"); lbl.textContent = "Listening…";
+    }
+
+    // Speak NPC replies with the browser's built-in TTS (CEF uses Windows voices).
+    function speak(text) {
+      try {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.0;
+        u.pitch = 0.9;
+        const voices = speechSynthesis.getVoices();
+        const v = voices.find((x) => /david|mark|guy|male/i.test(x.name)) || voices[0];
+        if (v) u.voice = v;
+        speechSynthesis.speak(u);
+      } catch (e) {}
+    }
+    // some CEF builds populate voices async
+    if (typeof speechSynthesis !== "undefined") speechSynthesis.getVoices();
+
+    window.addEventListener("message", (e) => {
+      const d = e.data || {};
+      if (d.type === "startRec") start();
+      else if (d.type === "stopRec") stop();
+      else if (d.type === "speak" && d.text) speak(d.text);
+    });
+  </script>
+</body>
+</html>

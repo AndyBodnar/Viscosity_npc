@@ -1,0 +1,14 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+
+# bundled Node binary — users supply their own (see bridge/README.txt)
+bridge/node.exe
+
+# Node tooling
+node_modules/
+
+# Local / private
+*.local
