@@ -1,3 +1,8 @@
+-- ============================================================================
+--  Viscosity_npc  ·  (c) 2026 AndyBodnar (Viscosity)
+--  https://github.com/AndyBodnar/Viscosity_npc
+--  Server use only. No resale, repackaging, or credit removal. See LICENSE.
+-- ============================================================================
 -- ============================================================
 --  Viscosity AI NPCs — reputation / memory (server)
 --  NPCs report crimes -> heat accrues per player. Heat drives the
